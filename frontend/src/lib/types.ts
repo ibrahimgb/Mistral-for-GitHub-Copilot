@@ -1,11 +1,29 @@
-// data Module
+// ── Data Module ─────────────────────────────────────────────────────────────
 
-export interface UploadDataResponse {
+export interface ColumnInfo {
+  name: string;
+  dtype: string;
+  null_count: number;
+  unique_count: number;
+  sample_values: unknown[];
+  min?: number | null;
+  max?: number | null;
+  mean?: number | null;
+}
+
+export interface UploadedFileInfo {
   file_id: string;
   filename: string;
   columns: string[];
+  column_info: ColumnInfo[];
   row_count: number;
   preview: Record<string, unknown>[];
+}
+
+export interface UploadDataResponse {
+  files: UploadedFileInfo[];
+  file_type: string;
+  total_files: number;
 }
 
 export interface DatasetMeta {

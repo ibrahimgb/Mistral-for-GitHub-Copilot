@@ -4,7 +4,6 @@ import { uploadData } from "@/lib/api";
 import type { UploadDataResponse } from "@/lib/types";
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import DataTable from "./DataTable";
 
 interface Props {
   onUpload?: (data: UploadDataResponse) => void;
@@ -12,7 +11,7 @@ interface Props {
 
 export default function DataUploader({ onUpload }: Props) {
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<UploadDataResponse | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const onDrop = useCallback(
@@ -21,13 +20,21 @@ export default function DataUploader({ onUpload }: Props) {
       if (!file) return;
       setLoading(true);
       setError(null);
+      setSuccessMsg(null);
       try {
         const data = await uploadData(file);
-        setResult(data);
+        setSuccessMsg(
+          `✓ Loaded ${data.total_files} file${data.total_files > 1 ? "s" : ""} (${data.file_type.toUpperCase()})`
+        );
         onUpload?.(data);
       } catch (err: unknown) {
-        const msg =
-          err instanceof Error ? err.message : "Upload failed";
+        let msg = "Upload failed";
+        if (err && typeof err === "object" && "response" in err) {
+          const axErr = err as { response?: { data?: { detail?: string }; status?: number } };
+          msg = axErr.response?.data?.detail || `Server error (${axErr.response?.status})`;
+        } else if (err instanceof Error) {
+          msg = err.message;
+        }
         setError(msg);
       } finally {
         setLoading(false);
@@ -42,12 +49,14 @@ export default function DataUploader({ onUpload }: Props) {
       "text/csv": [".csv"],
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
       "application/vnd.ms-excel": [".xls"],
+      "application/zip": [".zip"],
+      "application/x-zip-compressed": [".zip"],
     },
     maxFiles: 1,
   });
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div
         {...getRootProps()}
         className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
@@ -62,29 +71,17 @@ export default function DataUploader({ onUpload }: Props) {
         ) : (
           <div>
             <p className="text-sm font-medium">
-              📊 Drop CSV / Excel here
+              📊 Drop CSV / Excel / ZIP here
             </p>
-            <p className="text-xs text-gray-400 mt-1">or click to browse</p>
+            <p className="text-xs text-gray-400 mt-1">
+              or click to browse — ZIP extracts all CSVs inside
+            </p>
           </div>
         )}
       </div>
 
-      {error && (
-        <p className="text-xs text-red-500">{error}</p>
-      )}
-
-      {result && (
-        <div className="text-xs space-y-1">
-          <p className="text-green-600 font-medium">
-            ✓ {result.filename} — {result.row_count} rows, {result.columns.length} columns
-          </p>
-          <DataTable
-            data={result.preview}
-            columns={result.columns}
-            maxRows={5}
-          />
-        </div>
-      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {successMsg && <p className="text-xs text-green-600 font-medium">{successMsg}</p>}
     </div>
   );
 }
