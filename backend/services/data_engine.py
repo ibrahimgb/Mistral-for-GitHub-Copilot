@@ -5,11 +5,43 @@ Data analysis engine — Pandas operations & Plotly chart generation.
 from __future__ import annotations
 
 import io
+import math
+import zipfile
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.io as pio
+
+
+def _safe_float(v: Any) -> float | None:
+    """Convert a value to a JSON-safe float. Returns None for NaN / Inf."""
+    if v is None:
+        return None
+    f = float(v)
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
+def _safe_value(v: Any) -> Any:
+    """Convert a single value to a JSON-safe Python native type."""
+    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+        return None
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    if isinstance(v, (np.bool_,)):
+        return bool(v)
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return v
 
 
 # ── File loading ─────────────────────────────────────────────────────────────
@@ -25,6 +57,62 @@ def load_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     else:
         raise ValueError(f"Unsupported file format: .{ext}")
     return df
+
+
+def load_zip(file_bytes: bytes) -> list[tuple[str, pd.DataFrame]]:
+    """
+    Extract all CSV/Excel files from a ZIP archive.
+    Returns a list of (filename, DataFrame) tuples.
+    """
+    buf = io.BytesIO(file_bytes)
+    if not zipfile.is_zipfile(buf):
+        raise ValueError("The uploaded file is not a valid ZIP archive.")
+    buf.seek(0)
+
+    results: list[tuple[str, pd.DataFrame]] = []
+    with zipfile.ZipFile(buf, "r") as zf:
+        for entry in zf.namelist():
+            # Skip directories and hidden/system files
+            if entry.endswith("/") or entry.startswith("__MACOSX"):
+                continue
+            ext = entry.rsplit(".", 1)[-1].lower() if "." in entry else ""
+            if ext not in ("csv", "xls", "xlsx"):
+                continue
+            inner_bytes = zf.read(entry)
+            name = entry.rsplit("/", 1)[-1] if "/" in entry else entry
+            try:
+                df = load_file(inner_bytes, name)
+                results.append((name, df))
+            except Exception:
+                continue  # skip unreadable files
+
+    if not results:
+        raise ValueError("No CSV or Excel files found inside the ZIP archive.")
+    return results
+
+
+def get_column_info(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """
+    Return detailed column metadata: name, dtype, null count, unique count,
+    and sample values. Includes min/max/mean for numeric columns.
+    """
+    info: list[dict[str, Any]] = []
+    for col in df.columns:
+        col_data: dict[str, Any] = {
+            "name": str(col),
+            "dtype": str(df[col].dtype),
+            "null_count": int(df[col].isnull().sum()),
+            "unique_count": int(df[col].nunique()),
+            "sample_values": [
+                _safe_value(v) for v in df[col].head(3).tolist()
+            ],
+        }
+        if pd.api.types.is_numeric_dtype(df[col]):
+            col_data["min"] = _safe_float(df[col].min()) if not df[col].isnull().all() else None
+            col_data["max"] = _safe_float(df[col].max()) if not df[col].isnull().all() else None
+            col_data["mean"] = _safe_float(df[col].mean()) if not df[col].isnull().all() else None
+        info.append(col_data)
+    return info
 
 
 # ── Filtering ────────────────────────────────────────────────────────────────

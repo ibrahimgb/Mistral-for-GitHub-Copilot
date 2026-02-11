@@ -7,9 +7,15 @@ from __future__ import annotations
 import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
+import json
+import logging
+import numpy as np
+
 import store
 from services.data_engine import (
     load_file,
+    load_zip,
+    get_column_info,
     filter_data,
     aggregate_data,
     describe_data,
@@ -17,6 +23,8 @@ from services.data_engine import (
 )
 from models.schemas import (
     UploadDataResponse,
+    UploadedFileInfo,
+    ColumnInfo,
     FilterRequest,
     AggregateRequest,
     PlotRequest,
@@ -24,6 +32,32 @@ from models.schemas import (
     PlotResponse,
     StatsResponse,
 )
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """Safely convert numpy types to native Python for JSON."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            if np.isnan(obj) or np.isinf(obj):
+                return None
+            return float(obj)
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        if isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def _safe_preview(df) -> list[dict]:
+    """Convert df.head() to JSON-safe list of dicts (no numpy types)."""
+    raw = df.head(5).fillna("").to_dict(orient="records")
+    # Round-trip through JSON to convert numpy scalars → native Python
+    return json.loads(json.dumps(raw, cls=_NumpyEncoder))
+
+
+logger = logging.getLogger("lab-copilot.data")
 
 router = APIRouter()
 
@@ -40,31 +74,66 @@ def _get_df(file_id: str | None):
 
 @router.post("/upload", response_model=UploadDataResponse)
 async def upload_data(file: UploadFile = File(...)):
-    """Upload a CSV or Excel file."""
+    """Upload a CSV, Excel, or ZIP file. ZIP files are extracted and all CSVs inside are loaded."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
-    try:
-        contents = await file.read()
-        df = load_file(contents, file.filename)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
 
-    file_id = uuid.uuid4().hex[:12]
-    store.data_frames[file_id] = df
-    store.data_meta[file_id] = {
-        "filename": file.filename,
-        "columns": list(df.columns),
-        "row_count": len(df),
-    }
-    store.active_dataset_id = file_id
+    contents = await file.read()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
 
-    preview = df.head(5).fillna("").to_dict(orient="records")
+    # Determine file type and load accordingly
+    loaded_frames: list[tuple[str, object]] = []
+    if ext == "zip":
+        try:
+            loaded_frames = load_zip(contents)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to process ZIP: {e}")
+        file_type = "zip"
+    elif ext in ("csv", "xls", "xlsx"):
+        try:
+            df = load_file(contents, file.filename)
+            loaded_frames = [(file.filename, df)]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
+        file_type = ext
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: .{ext}. Upload CSV, Excel, or ZIP.",
+        )
+
+    # Store each loaded DataFrame and build response
+    file_infos = []
+    for fname, df in loaded_frames:
+        try:
+            file_id = uuid.uuid4().hex[:12]
+            store.data_frames[file_id] = df
+            store.data_meta[file_id] = {
+                "filename": fname,
+                "columns": list(df.columns),
+                "row_count": len(df),
+            }
+            store.active_dataset_id = file_id  # last one becomes active
+
+            col_info = get_column_info(df)
+            preview = _safe_preview(df)
+
+            file_infos.append(UploadedFileInfo(
+                file_id=file_id,
+                filename=fname,
+                columns=list(df.columns),
+                column_info=[ColumnInfo(**c) for c in col_info],
+                row_count=len(df),
+                preview=preview,
+            ))
+        except Exception as e:
+            logger.error("Error processing file %s from upload: %s", fname, e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error processing '{fname}': {e}")
+
     return UploadDataResponse(
-        file_id=file_id,
-        filename=file.filename,
-        columns=list(df.columns),
-        row_count=len(df),
-        preview=preview,
+        files=file_infos,
+        file_type=file_type,
+        total_files=len(file_infos),
     )
 
 

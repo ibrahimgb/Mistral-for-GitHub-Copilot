@@ -8,14 +8,33 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional
 
 
-# data Module
+# ── Data Module ──────────────────────────────────────────────────────────────
 
-class UploadDataResponse(BaseModel):
+class ColumnInfo(BaseModel):
+    name: str
+    dtype: str
+    null_count: int
+    unique_count: int
+    sample_values: list[Any]
+    min: Optional[float] = None
+    max: Optional[float] = None
+    mean: Optional[float] = None
+
+
+class UploadedFileInfo(BaseModel):
     file_id: str
     filename: str
     columns: list[str]
+    column_info: list[ColumnInfo]
     row_count: int
     preview: list[dict[str, Any]]
+
+
+class UploadDataResponse(BaseModel):
+    """Response for single or multi-file upload (CSV, Excel, or ZIP)."""
+    files: list[UploadedFileInfo]
+    file_type: str  # 'csv', 'xlsx', 'zip'
+    total_files: int
 
 
 class FilterRequest(BaseModel):
@@ -56,7 +75,7 @@ class StatsResponse(BaseModel):
     statistics: dict[str, Any]
 
 
-# document Module
+# ── Document Module ──────────────────────────────────────────────────────────
 
 class DocUploadResponse(BaseModel):
     doc_id: str
@@ -86,7 +105,7 @@ class DocListItem(BaseModel):
     num_chunks: int
 
 
-# chat Module
+# ── Chat Module ──────────────────────────────────────────────────────────────
 
 class ChatMessageRequest(BaseModel):
     message: str
