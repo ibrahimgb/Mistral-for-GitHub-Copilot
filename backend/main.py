@@ -2,10 +2,42 @@
 Lab Co-Pilot — FastAPI application entry point.
 """
 
+import json
+import math
+
+import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import os
+
+
+class SafeJSONResponse(JSONResponse):
+    """JSONResponse that handles numpy types, NaN, and Inf gracefully."""
+
+    class _Encoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                f = float(obj)
+                return None if (math.isnan(f) or math.isinf(f)) else f
+            if isinstance(obj, (np.bool_,)):
+                return bool(obj)
+            if isinstance(obj, (np.ndarray,)):
+                return obj.tolist()
+            return super().default(obj)
+
+    def render(self, content) -> bytes:
+        return json.dumps(
+            content,
+            cls=self._Encoder,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 load_dotenv()
 
@@ -13,6 +45,7 @@ app = FastAPI(
     title="Lab Co-Pilot API",
     description="Natural-language lab assistant for data analysis, document Q&A, and visualization.",
     version="0.1.0",
+    default_response_class=SafeJSONResponse,
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
